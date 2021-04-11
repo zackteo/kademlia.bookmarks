@@ -15,60 +15,36 @@
             [jepsen.os.debian :as debian]
             [knossos.model :as model]
             [slingshot.slingshot :refer [try+]]
-            [verschlimmbesserung.core :as v]))
-
-;; (def dir "/opt/etcd")
+            [verschlimmbesserung.core :as v]
+            [kademlia.api :as api]))
 
 (def dir "/opt/kademlia")
-
-
-
-
-;; (def binary "etcd")
-
 (def binary "kademlia")
-
 
 (def logfile (str dir "/kademlia.log"))
 (def pidfile (str dir "/kademlia.pid"))
 
-;; (defn parse-long
-;;   "Parses a string to a Long. Passes through `nil`."
-;;   [s]
-;;   (when s (Long/parseLong s)))
+(defn node-url
+  "An HTTP url for connecting to a node on a particular port."
+  [node port]
+  (str "http://" node ":" port))
 
-;; (defn node-url
-;;   "An HTTP url for connecting to a node on a particular port."
-;;   [node port]
-;;   (str "http://" node ":" port))
+(defn client-url
+  "The HTTP url clients use to talk to a node."
+  [node]
+  (node-url (net/ip (name node)) 8080)) 
 
-;; (defn peer-url
-;;   "The HTTP url for other peers to talk to a node."
-;;   [node]
-;;   (node-url node 2380))
+(defn parse-long
+  "Parses a string to a Long. Passes through `nil`."
+  [s]
+  (when s (Long/parseLong s)))
 
-;; (defn client-url
-;;   "The HTTP url clients use to talk to a node."
-;;   [node]
-;;   (node-url node 2379))
+;; Create binary with command node ...
 
-;; (defn initial-cluster
-;;   "Constructs an initial cluster string for a test, like
-;;   \"foo=foo:2380,bar=bar:2380,...\""
-;;   [test]
-;;   (->> (:nodes test)
-;;        (map (fn [node]
-;;               (str node "=" (peer-url node))))
-;;        (str/join ",")))
-
-;; (defn initialise-cluster
-;;   "Constructs an initial cluster string for a test, like
-;;   \"foo=foo:2380,bar=bar:2380,...\""
-;;   [test]
-;;   (->> test
-
-
-;;        ))
+;; apt-get install -y golang-go
+;; go bulid
+;; mv main ../kademlia.bookmarks/resources/kademlia
+;; cp -r templates ../kademlia.bookmarks/resources/templates
 
 (defn db
   "Etcd DB for a particular version."
@@ -77,42 +53,13 @@
     (setup! [_ test node]
       (info node "installing kademlia")
       (c/su
-        ;; (let [url "https://www.mediafire.com/file/3rkph5wfthufjxf/kademlia.tar.gz/file"
-        ;;       ;; (str "https://storage.googleapis.com/etcd/" version
-        ;;       ;;      "/etcd-" version "-linux-amd64.tar.gz")
-        ;;       ])
-        
-        ;; (try (c/exec :dpkg-query :-l :libc6)
-        ;;      (catch RuntimeException _
-        ;;        (info "Installing GLIBC")
-        ;;        ))
-
-        
-        ;; (info "Installing GLIBC")
-        ;; (c/exec :apt-get :install :-y :libc6)
-
-        ;; (try (c/exec :dpkg-query :-l :golang-go)
-        ;;      (catch RuntimeException _
-        ;;        (info "Installing golang-go")
-        ;;        (c/exec :apt-get :install :-y :golang-go)))
-        
-        ;; (try (c/exec :dpkg-query :-l :git)
-        ;;      (catch RuntimeException _
-        ;;        (info "Installing git")
-        ;;        (c/exec :apt-get :install :-y :git)))
-        
-        ;; (c/exec :env "GOPATH=~/gocode"
-        ;;         :go :get :-u "github.com/zackteo/KademliaBookmarks")
-
-
-        ;; Create binary with command node ...
-
-        ;; apt-get install -y golang-go
-        ;; go bulid
-        ;; mv main ../kademlia.bookmarks/resources/kademlia
-        
         (c/exec :mkdir :-p dir)
         (c/upload "resources/kademlia" (str dir "/" binary))
+        (c/exec :mkdir :-p (str dir "/templates"))
+        (c/upload "resources/templates/footer.html" (str dir "/templates/footer.html" ))
+        (c/upload "resources/templates/header.html" (str dir "/templates/header.html" ))
+        (c/upload "resources/templates/index.html" (str dir "/templates/index.html" ))
+        (c/upload "resources/templates/menu.html" (str dir "/templates/menu.html" ))
         (c/exec :chmod :+x (str dir "/" binary))
         
         (cu/start-daemon!
@@ -124,7 +71,7 @@
           (net/ip "n1")
           )
 
-        (Thread/sleep 90000)))
+        (Thread/sleep 10000)))
 
     (teardown! [_ test node]
       (info node "tearing down kademlia")
@@ -136,37 +83,35 @@
     (log-files [_ test node]
       [logfile])))
 
-(defn r   [_ _] {:type :invoke, :f :read, :value nil})
-(defn w   [_ _] {:type :invoke, :f :write, :value (rand-int 5)})
-(defn cas [_ _] {:type :invoke, :f :cas, :value [(rand-int 5) (rand-int 5)]})
+(defn r      [_ _] {:type :invoke, :f :read, :value (rand-int 5)})
+(defn r-all  [_ _] {:type :invoke, :f :read-all, :value nil})
+(defn r-nb   [_ _] {:type :invoke, :f :read-neighbours, :value nil})
+(defn w      [_ _] {:type :invoke, :f :write, :value [(rand-int 5) (rand-int 5)]})
+(defn s      [_ _] {:type :invoke, :f :search, :value (rand-int 5)})
 
-;; (defrecord Client [conn]
-;;   client/Client
-;;   (open! [this test node]
-;;     (assoc this :conn (v/connect (client-url node)
-;;                                  {:timeout 5000})))
-
-;;   (setup! [this test])
-
-;;   (invoke! [this test op]
-;;     (case (:f op)
-;;       :read (assoc op :type :ok, :value (parse-long (v/get conn "foo")))
-;;       :write (do (v/reset! conn "foo" (:value op))
-;;                  (assoc op :type :ok))
-;;       :cas (try+
-;;              (let [[old new] (:value op)]
-;;                (assoc op :type (if (v/cas! conn "foo" old new)
-;;                                  :ok
-;;                                  :fail)))
-;;              (catch [:errorCode 100] ex
-;;                (assoc op :type :fail, :error :not-found)))))
-
-;;   (teardown! [this test])
-
-;;   (close! [_ test]
-;;     ;; If our connection were stateful, we'd close it here. Verschlimmmbesserung
-;;     ;; doesn't actually hold connections, so there's nothing to close.
-;;     ))
+(defrecord Client [conn]
+  client/Client
+  (open! [this test node]
+    (assoc this :conn (api/connect (client-url node))))
+  (setup! [this test]
+    ;; initializes any data structures the test needs--for instance,
+    ;; creating tables or setting up fixtures
+    )
+  (invoke! [this test op]
+    (case (:f op)
+      :read (assoc op :type :ok, :value (parse-long (api/read-key conn (:value op))))
+      ;; :read-all (assoc op :type :ok, :value (parse-long (api/read-all conn)))
+      ;; :read-neighbours (assoc op :type :ok, :value (parse-long (api/read-neighbours conn)))
+      :write (let [[key value] (:value op)]
+               (assoc op :type :ok :value (parse-long (api/insert conn key value))))
+      :search (assoc op :type :ok, :value (api/search conn (:value op)))
+      
+      ))
+  (teardown! [this test])
+  (close! [_ test]
+    ;; If our connection were stateful, we'd close it here. Verschlimmmbesserung
+    ;; doesn't actually hold connections, so there's nothing to close.
+    ))
 
 (defn kademlia-test
   "Given an options map from the command line runner (e.g. :nodes, :ssh,
@@ -178,23 +123,29 @@
           :name            "kademlia"
           :os              debian/os
           :db              (db)
-          ;; :client          (Client. nil)
-          ;; :nemesis         (nemesis/partition-random-halves)
-          ;; :checker         (checker/compose
-          ;;                    {:perf   (checker/perf)
-          ;;                     :linear (checker/linearizable
-          ;;                               {:model     (model/cas-register)
-          ;;                                :algorithm :linear})
-          ;;                     :timeline (timeline/html)})
-          ;; :generator (->> (gen/mix [r w cas])
+          :client          (Client. nil)
+          :nemesis         (nemesis/partition-random-halves)
+          :checker         (checker/compose
+                             {:perf   (checker/perf)
+                              :linear (checker/linearizable
+                                        {:model     (model/register)
+                                         :algorithm :linear})
+                              :timeline (timeline/html)})
+          
+          :generator (->> (gen/mix [r w s])
+                          (gen/stagger 1/50)
+                          (gen/nemesis
+                            (cycle [(gen/sleep 5)
+                                    {:type :info, :f :start}
+                                    (gen/sleep 5)
+                                    {:type :info, :f :stop}]))
+                          (gen/time-limit (:time-limit opts)))
+          ;; :generator (->> (gen/mix [r w])
           ;;                 (gen/stagger 1/50)
-          ;;                 (gen/nemesis
-          ;;                   (cycle [(gen/sleep 5)
-          ;;                           {:type :info, :f :start}
-          ;;                           (gen/sleep 5)
-          ;;                           {:type :info, :f :stop}]))
-          ;;                 (gen/time-limit (:time-limit opts)))
-          }))
+          ;;                 (gen/nemesis nil)
+          ;;                 (gen/time-limit 15))
+          }
+         ))
 
 (defn -main
   "Handles command line arguments. Can either run a test, or a web server for
@@ -204,10 +155,20 @@
                    (cli/serve-cmd))
             args))
 
-;; Just a tester
+
+;; (defn etcd-test
+;;   "Given an options map from the command line runner (e.g. :nodes, :ssh,
+;;   :concurrency, ...), constructs a test map."
+;;   [opts]
+;;   (merge tests/noop-test
+;;          {:pure-generators true}
+;;          opts))
+
 
 ;; (defn -main
 ;;   "Handles command line arguments. Can either run a test, or a web server for
 ;;   browsing results."
 ;;   [& args]
-;;   (api/dodo args))
+;;   (cli/run! (merge (cli/single-test-cmd {:test-fn etcd-test})
+;;                    (cli/serve-cmd))
+;;             args))
