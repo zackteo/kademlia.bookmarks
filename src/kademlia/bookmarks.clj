@@ -24,6 +24,8 @@
 (def logfile (str dir "/kademlia.log"))
 (def pidfile (str dir "/kademlia.pid"))
 
+
+
 (defn node-url
   "An HTTP url for connecting to a node on a particular port."
   [node port]
@@ -83,11 +85,11 @@
     (log-files [_ test node]
       [logfile])))
 
-(defn r      [_ _] {:type :invoke, :f :read, :value (rand-int 5)})
+(defn r      [_ _] {:type :invoke, :f :read, :value nil})
 (defn r-all  [_ _] {:type :invoke, :f :read-all, :value nil})
 (defn r-nb   [_ _] {:type :invoke, :f :read-neighbours, :value nil})
-(defn w      [_ _] {:type :invoke, :f :write, :value [(rand-int 5) (rand-int 5)]})
-(defn s      [_ _] {:type :invoke, :f :search, :value (rand-int 5)})
+(defn w      [_ _] {:type :invoke, :f :write, :value (rand-int 5)})
+(defn s      [_ _] {:type :invoke, :f :search, :value nil})
 
 (defrecord Client [conn]
   client/Client
@@ -99,12 +101,12 @@
     )
   (invoke! [this test op]
     (case (:f op)
-      :read (assoc op :type :ok, :value (parse-long (api/read-key conn (:value op))))
+      :read (assoc op :type :ok, :value (parse-long (api/read-key conn "foo")))
       ;; :read-all (assoc op :type :ok, :value (parse-long (api/read-all conn)))
       ;; :read-neighbours (assoc op :type :ok, :value (parse-long (api/read-neighbours conn)))
-      :write (let [[key value] (:value op)]
-               (assoc op :type :ok :value (parse-long (api/insert conn key value))))
-      :search (assoc op :type :ok, :value (api/search conn (:value op)))
+      :write (let [ value (:value op)]
+               (assoc op :type :ok :value (parse-long (api/insert conn "foo" value))))
+      :search (assoc op :type :ok, :value (parse-long (api/search conn "foo")))
       
       ))
   (teardown! [this test])
@@ -112,6 +114,69 @@
     ;; If our connection were stateful, we'd close it here. Verschlimmmbesserung
     ;; doesn't actually hold connections, so there's nothing to close.
     ))
+
+;; (defn generator-old [opts]
+;;   (->> (gen/mix [w s])
+;;        (gen/stagger 1/50)
+;;        (gen/nemesis
+;;          (cycle [(gen/sleep 5)
+;;                  {:type :info, :f :start}
+;;                  (gen/sleep 5)
+;;                  {:type :info, :f :stop}]))
+;;        (gen/time-limit (:time-limit opts))))
+
+(def inc-seq-r-w
+  (sequence
+    (comp
+      (mapcat identity))
+    (map
+      (fn [n]
+        [{:type :invoke, :f :write, :value n}
+         (repeat 150 {:f :read})])
+      (range))))
+
+(defn single-key-r-w [opts]
+  (->> inc-seq-r-w
+       (gen/stagger 1/50)
+       (gen/nemesis nil)
+       (gen/time-limit 60)))
+
+(defn single-key-r-w-nemesis [opts]
+  (->> inc-seq-r-w
+       (gen/stagger 1/50)
+       (gen/nemesis
+         (cycle [(gen/sleep 5)
+                 {:type :info, :f :start}
+                 (gen/sleep 5)
+                 {:type :info, :f :stop}]))
+       (gen/time-limit 60)))
+
+(def inc-seq-s-w
+  (sequence
+    (comp
+      (mapcat identity))
+    (map
+      (fn [n]
+        [{:type :invoke, :f :write, :value n}
+         (repeat 150 {:f :search})])
+      (range))))
+
+(defn single-key-s-w [opts]
+  (->> inc-seq-s-w
+       (gen/stagger 1/50)
+       (gen/nemesis nil)
+       (gen/time-limit 60)))
+
+(defn single-key-s-w-nemesis [opts]
+  (->> inc-seq-s-w
+       (gen/stagger 1/50)
+       (gen/nemesis
+         (cycle [(gen/sleep 5)
+                 {:type :info, :f :start}
+                 (gen/sleep 5)
+                 {:type :info, :f :stop}]))
+       (gen/time-limit 60)))
+
 
 (defn kademlia-test
   "Given an options map from the command line runner (e.g. :nodes, :ssh,
@@ -127,19 +192,13 @@
           :nemesis         (nemesis/partition-random-halves)
           :checker         (checker/compose
                              {:perf   (checker/perf)
-                              :linear (checker/linearizable
-                                        {:model     (model/register)
-                                         :algorithm :linear})
+                              :rate   (checker/rate-graph)
+                              :latency (checker/latency-graph)
+                              ;; :linear (checker/linearizable
+                              ;;           {:model     (model/register)
+                              ;;            :algorithm :linear})
                               :timeline (timeline/html)})
-          
-          :generator (->> (gen/mix [r w s])
-                          (gen/stagger 1/50)
-                          (gen/nemesis
-                            (cycle [(gen/sleep 5)
-                                    {:type :info, :f :start}
-                                    (gen/sleep 5)
-                                    {:type :info, :f :stop}]))
-                          (gen/time-limit (:time-limit opts)))
+          :generator (single-key-s-w-nemesis opts)
           ;; :generator (->> (gen/mix [r w])
           ;;                 (gen/stagger 1/50)
           ;;                 (gen/nemesis nil)
