@@ -1,10 +1,11 @@
 # kademlia.bookmarks
 
-A Clojure library designed to ... well, that part is up to you.
+Jepsen Tests for our Kademlia Implementation
 
 ## Usage
 
-FIXME
+Lauch Jepsen docker setup and run `lein run test` 
+
 
 ## License
 
