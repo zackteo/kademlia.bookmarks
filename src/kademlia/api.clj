@@ -50,9 +50,11 @@
               (:body)
               (json/read-str)
               vals
-              first)]
-    (if (re-matches #"key not found.*" key)
-      nil key)))
+              first
+              )]
+    (if (re-matches #"key not found.*" (str key))
+      nil (second key))
+    ))
 
 (defn read-all [client]
   (->
@@ -68,9 +70,11 @@
               (:body)
               (json/read-str)
               vals
-              first)]
-    (if (re-matches #"value not found.*" key)
-      nil key)))
+              first
+              )]
+    (if (re-matches #"Key Not Found.*" (str key))
+      nil (second (str/split key #" ---- ")))
+    ))
 
 (defn insert [client key value]
   (let [key (->
@@ -79,9 +83,10 @@
               (:body)
               (json/read-str)
               vals
-              first
+              second
               (str/split #" ")
-              first)]
+              first
+              )]
     key))
 
 (defn read-neighbours [client]
@@ -90,6 +95,9 @@
     ;; (select-keys [:body :request-time])
     (:body)
     (json/read-str)))
+
+(defn rsearch [client key]
+  (vector (read-key client key) (search client key)))
 
 
 (comment
@@ -102,12 +110,15 @@
   (api k-client)
   
   (read-key k-client "Anime")
-
-  (read-key k-client "5")
-
+  
   (read-all k-client)
 
   (search k-client "5")
+  (read-key k-client "5")
+
+  (rsearch k-client "5")
+
+  
   (search k-client "Anime")
 
   (insert k-client "5" "3")

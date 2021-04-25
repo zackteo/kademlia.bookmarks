@@ -15,7 +15,6 @@
             [jepsen.os.debian :as debian]
             [knossos.model :as model]
             [slingshot.slingshot :refer [try+]]
-            [verschlimmbesserung.core :as v]
             [kademlia.api :as api]))
 
 (def dir "/opt/kademlia")
@@ -43,6 +42,7 @@
 
 ;; Create binary with command node ...
 
+;; TODO: SETUP Steps
 ;; apt-get install -y golang-go
 ;; go bulid
 ;; mv main ../kademlia.bookmarks/resources/kademlia
@@ -67,10 +67,14 @@
         (cu/start-daemon!
           {:logfile logfile
            :pidfile pidfile
-           :chdir   dir}
+           :chdir   dir
+           :match-process-name? true
+           :process-name "kademlia"}
           binary
           (net/ip (name node))
           (net/ip "n1")
+          3
+          5
           )
 
         (Thread/sleep 10000)))
@@ -90,6 +94,7 @@
 (defn r-nb   [_ _] {:type :invoke, :f :read-neighbours, :value nil})
 (defn w      [_ _] {:type :invoke, :f :write, :value (rand-int 5)})
 (defn s      [_ _] {:type :invoke, :f :search, :value nil})
+(defn rs      [_ _] {:type :invoke, :f :rsearch, :value nil})
 
 (defrecord Client [conn]
   client/Client
@@ -107,6 +112,7 @@
       :write (let [ value (:value op)]
                (assoc op :type :ok :value (parse-long (api/insert conn "foo" value))))
       :search (assoc op :type :ok, :value (parse-long (api/search conn "foo")))
+      :rsearch (assoc op :type :ok, :value (api/rsearch conn "foo"))
       
       ))
   (teardown! [this test])
@@ -132,23 +138,25 @@
     (map
       (fn [n]
         [{:type :invoke, :f :write, :value n}
-         (repeat 150 {:f :read})])
+         (repeat 400 {:f :read})])
       (range))))
 
+;; TEST 1
 (defn single-key-r-w [opts]
   (->> inc-seq-r-w
        (gen/stagger 1/50)
        (gen/nemesis nil)
        (gen/time-limit 60)))
 
+;; TEST 2
 (defn single-key-r-w-nemesis [opts]
   (->> inc-seq-r-w
        (gen/stagger 1/50)
        (gen/nemesis
-         (cycle [(gen/sleep 5)
-                 {:type :info, :f :start}
-                 (gen/sleep 5)
-                 {:type :info, :f :stop}]))
+         (cycle [{:type :info, :f :start}
+                 (gen/sleep 10)
+                 {:type :info, :f :stop}
+                 (gen/sleep 20)]))
        (gen/time-limit 60)))
 
 (def inc-seq-s-w
@@ -158,15 +166,17 @@
     (map
       (fn [n]
         [{:type :invoke, :f :write, :value n}
-         (repeat 150 {:f :search})])
+         (repeat 350 {:f :search})])
       (range))))
 
+;; TEST 3
 (defn single-key-s-w [opts]
   (->> inc-seq-s-w
        (gen/stagger 1/50)
        (gen/nemesis nil)
        (gen/time-limit 60)))
 
+;; TEST 4
 (defn single-key-s-w-nemesis [opts]
   (->> inc-seq-s-w
        (gen/stagger 1/50)
@@ -177,6 +187,82 @@
                  {:type :info, :f :stop}]))
        (gen/time-limit 60)))
 
+;; TEST 5
+;; Change to nemesis/hammer-time
+(defn single-key-s-w-kill [opts]
+  (->> inc-seq-s-w
+       (gen/stagger 1/50)
+       (gen/nemesis
+         (cycle [(gen/sleep 5)
+                 {:type :info, :f :start}
+                 (gen/sleep 5)
+                 {:type :info, :f :stop}]))
+       (gen/time-limit 60)))
+
+;; HACK
+(def scale
+  (sequence
+    (comp
+      (mapcat identity))
+    (map
+      (fn [n]
+        [{:f :write, :value n}
+         (repeat 100000000000000 {:f :search})])
+      (range))))
+
+(def test
+  [{:f :write, :value 5}
+   (repeatedly #(hash-map :f :search))]
+  )
+
+(defn scale-test [opts]
+  (->> test
+       (gen/stagger 1/50)
+       (gen/nemesis nil)
+       (gen/time-limit 60)))
+
+(def inc-seq-w-rs
+  (sequence
+    (comp
+      (mapcat identity))
+    (map
+      (fn [n]
+        [{:type :invoke, :f :write, :value n}
+         (repeat 350 {:f :search})])
+      (range))))
+
+;; fault tolerance
+(defn rsearch-w-nemesis [opts]
+  (->> inc-seq-w-rs
+       (gen/stagger 1/50)
+       (gen/nemesis 
+         (cycle [(gen/sleep 10)
+                 {:type :info, :f :start}
+                 (gen/sleep 20)
+                 {:type :info, :f :stop}
+                 ])
+         )
+       (gen/time-limit 60)))
+
+(def inc-seq-r-w2
+  (sequence
+    (comp
+      (mapcat identity))
+    (map
+      (fn [n]
+        [{:type :invoke, :f :write, :value n}
+         (repeat 400 {:f :read})])
+      (range))))
+
+(defn single-key-r-w-nemesis2 [opts]
+  (->> inc-seq-r-w2
+       (gen/stagger 1/50)
+       (gen/nemesis
+         (cycle [(gen/sleep 10)
+                 {:type :info, :f :start}
+                 (gen/sleep 10)
+                 {:type :info, :f :stop}]))
+       (gen/time-limit 60)))
 
 (defn kademlia-test
   "Given an options map from the command line runner (e.g. :nodes, :ssh,
@@ -189,7 +275,10 @@
           :os              debian/os
           :db              (db)
           :client          (Client. nil)
-          :nemesis         (nemesis/partition-random-halves)
+          :nemesis
+          (nemesis/partition-random-node)
+          ;; (nemesis/partition-random-halves)
+          ;; (nemesis/hammer-time "kademlia")
           :checker         (checker/compose
                              {:perf   (checker/perf)
                               :rate   (checker/rate-graph)
@@ -198,7 +287,7 @@
                               ;;           {:model     (model/register)
                               ;;            :algorithm :linear})
                               :timeline (timeline/html)})
-          :generator (single-key-s-w-nemesis opts)
+          :generator (single-key-r-w-nemesis2 opts)
           ;; :generator (->> (gen/mix [r w])
           ;;                 (gen/stagger 1/50)
           ;;                 (gen/nemesis nil)
@@ -231,3 +320,7 @@
 ;;   (cli/run! (merge (cli/single-test-cmd {:test-fn etcd-test})
 ;;                    (cli/serve-cmd))
 ;;             args))
+
+;; lein run test --concurrency 1n --nodes "n1, n2, n3, n4, n5, n6, n7, n8, n9, n10"
+;; lein run test --nodes "n1, n2, n3, n4, n5, n6, n7, n8, n9, n10, n11, n12, n13, n14, n15, n16, n17, n18, n19, n20"
+;; lein run test --nodes "n1, n2, n3, n4, n5, n6, n7, n8, n9, n10, n11, n12, n13, n14, n15, n16, n17, n18, n19, n20, n21, n22, n23, n24, n25"
